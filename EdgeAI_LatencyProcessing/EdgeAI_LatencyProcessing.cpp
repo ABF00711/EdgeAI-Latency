@@ -1,23 +1,22 @@
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <iostream>
 #include <string>
 #include <thread>
-#include <winsock2.h>
+#include <chrono>
 #include <atomic>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 #include "udp_packet_generator.h"
 #include "udp_packet_receiver.h"
 
 int main() {
-
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "WSAStartup failed with error: " << WSAGetLastError() << std::endl;
-        return 1;
-    }
-
-    SOCKET sendSock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sendSock == INVALID_SOCKET) {
-        std::cerr << "Socket creation failed with error: " << WSAGetLastError() << std::endl;
+    // Create sending socket
+    int sendSock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sendSock == -1) {
+        std::cerr << "Socket creation failed: " << strerror(errno) << std::endl;
         return 1;
     }
 
@@ -26,9 +25,10 @@ int main() {
     serverAddr.sin_port = htons(5005);
     serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    SOCKET recvSock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (recvSock == INVALID_SOCKET) {
-        std::cerr << "Receiver socket creation failed with error: " << WSAGetLastError() << std::endl;
+    // Create receiving socket
+    int recvSock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (recvSock == -1) {
+        std::cerr << "Receiver socket creation failed: " << strerror(errno) << std::endl;
         return 1;
     }
 
@@ -37,26 +37,45 @@ int main() {
     recvAddr.sin_port = htons(5005);
     recvAddr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(recvSock, (sockaddr*)&recvAddr, sizeof(recvAddr)) == SOCKET_ERROR) {
-        std::cerr << "Bind failed with error: " << WSAGetLastError() << std::endl;
+    // Bind receiving socket to address
+    if (bind(recvSock, (struct sockaddr*)&recvAddr, sizeof(recvAddr)) == -1) {
+        std::cerr << "Bind failed: " << strerror(errno) << std::endl;
+        close(recvSock);  // Clean up socket
         return 1;
     }
 
-    u_long mode = 1;
-    if (ioctlsocket(recvSock, FIONBIO, &mode) == SOCKET_ERROR) {
-        std::cerr << "Failed to set non-blocking mode: " << WSAGetLastError() << std::endl;
+    // Set socket to non-blocking mode
+    int flags = fcntl(recvSock, F_GETFL, 0);
+    if (flags == -1) {
+        std::cerr << "Failed to get socket flags: " << strerror(errno) << std::endl;
+        close(recvSock);
+        return 1;
+    }
+    if (fcntl(recvSock, F_SETFL, flags | O_NONBLOCK) == -1) {
+        std::cerr << "Failed to set non-blocking mode: " << strerror(errno) << std::endl;
+        close(recvSock);
         return 1;
     }
 
+    // Start UDP packet generator and receiver threads
     std::thread generator(generate_data, sendSock, serverAddr);
     std::thread receiver(receive_data, recvSock, recvAddr);
 
+    // Set receiver thread to real-time priority
+    struct sched_param schedParam;
+    schedParam.sched_priority = 99;  // High priority for real-time scheduling
+    if (pthread_setschedparam(receiver.native_handle(), SCHED_FIFO, &schedParam) != 0) {
+        std::cerr << "Failed to set thread priority: " << strerror(errno) << std::endl;
+        close(recvSock);
+        return 1;
+    }
+
+    // Wait for threads to finish
     generator.join();
     receiver.join();
 
-    closesocket(sendSock);
-    closesocket(recvSock); 
-    WSACleanup();           
-
+    // Clean up
+    close(sendSock);
+    close(recvSock);
     return 0;
 }

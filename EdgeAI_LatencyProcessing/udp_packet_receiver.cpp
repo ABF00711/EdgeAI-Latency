@@ -1,10 +1,14 @@
-#include <winsock2.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <iostream>
 #include <chrono>
 #include <vector>
 #include <cmath>
 #include <fstream>
 #include <mutex>
+#include <unistd.h> // For close()
+#include <cstring>  // For strerror()
 
 std::mutex logFileMutex;
 std::vector<long long> latencies;
@@ -18,20 +22,25 @@ struct SensorData {
     uint64_t timestamp;
 };
 
-void receive_data(SOCKET recvSock, sockaddr_in recvAddr) {
-
-	std::ofstream logFile("latency_log.csv", std::ios::app);
+void receive_data(int recvSock, sockaddr_in recvAddr) {
     while (true) {
+        if (recvSock == -1) {
+            std::cerr << "Socket is invalid or closed!" << std::endl;
+            continue;
+        }
+
         SensorData data;
         sockaddr_in senderAddr;
-        int senderAddrSize = sizeof(senderAddr);
+        socklen_t senderAddrSize = sizeof(senderAddr);
 
+        auto start_time = std::chrono::high_resolution_clock::now();
+        int bytesReceived = recvfrom(recvSock, (char*)&data, sizeof(data), 0, (struct sockaddr*)&senderAddr, &senderAddrSize);
 
-		auto start_time = std::chrono::high_resolution_clock::now();
-        int bytesReceived = recvfrom(recvSock, (char*)&data, sizeof(data), 0, (sockaddr*)&senderAddr, &senderAddrSize);
-
-        if (bytesReceived == SOCKET_ERROR) {
-            std::cerr << "Failed to receive packet: " << WSAGetLastError() << std::endl;
+        if (bytesReceived == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;  // If no data is available, continue
+            }
+            std::cerr << "Failed to receive packet: " << strerror(errno) << std::endl;
             continue;
         }
 
@@ -39,9 +48,9 @@ void receive_data(SOCKET recvSock, sockaddr_in recvAddr) {
             float etime = data.distance / data.velocity;
             float etime_ms = etime * 1000;
 
-			auto end_time = std::chrono::high_resolution_clock::now();
-			auto latency = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
-			latencies.push_back(latency);
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto latency = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+            latencies.push_back(latency);
 
             std::cout << "Received data - ID: " << data.object_id << ", Velocity: "
                 << data.velocity << " m/s, Distance: " << data.distance << " meters\n";
@@ -71,22 +80,18 @@ void receive_data(SOCKET recvSock, sockaddr_in recvAddr) {
                 double jitter = std::sqrt(variance);
                 std::cout << "Jitter (Standard Deviation): " << jitter << " microseconds\n";
 
-                logFile << "Jitter (Standard Deviation): " << jitter << " microseconds " << "\n";
                 logBuffer.push_back("Jitter (Standard Deviation): " + std::to_string(jitter) + " microseconds ");
 
                 latencies.clear();
             }
         }
-
-        if (logBuffer.size() >= 100) {
-            std::lock_guard<std::mutex> lock(logFileMutex);
-            std::ofstream logFile("latency_log.csv", std::ios::app);
-            for (const auto& logEntry : logBuffer) {
-                logFile << logEntry;
-            }
-            logBuffer.clear();
-        }
     }
 
+    std::ofstream logFile("latency_log.csv", std::ios::app);
+    for (const auto& logEntry : logBuffer) {
+        logFile << logEntry;
+    }
+
+    logBuffer.clear();
     logFile.close();
 }

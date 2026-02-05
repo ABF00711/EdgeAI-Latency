@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="EdgeAI_LatencyProcessing/EdgeAI_LatencyProcessing.vcxproj" />
+  <Project Path="EdgeAI_LatencyProcessing/EdgeAI_LatencyProcessing.vcxproj" Id="84d92ed3-69af-471f-b01c-9031efe2c691" />
 </Solution>
